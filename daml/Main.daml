@@ -1,213 +1,126 @@
 module Main where
 
-import DA.Time
+import DA.Map as Map
+import DA.List as List
 
-type ProjectProposalId = ContractId ProjectProposal
-type ProjectId = ContractId Project
 
-data ProjectInfo = ProjectInfo with
-    lead: Party
-    title: Text
-    details: Text
-    soloProject: Bool
-    participants: Either Party [Party] -- either 1 person or a group of people
-    budgetRequirement: Optional (Decimal) -- either the amount in USD or None
-    startDate: Date
-    endDate: Date
-        deriving (Show, Eq, Ord)
+data Product = Product with
+    name: Text
+    quantity: Int
+    price: Decimal
+        deriving (Show, Eq)
 
-class Duration i o where
-    getDuration : i -> o
+data ShoppingCart = ShoppingCart with
+    items: Map Text Product
+        deriving (Show, Eq)
 
-instance Duration ProjectInfo Int where
-    getDuration proj =
+class Metrics i o  where
+    getCartTotal: i -> o 
+
+instance Metrics ShoppingCart Decimal where
+    getCartTotal cart =
         let
-            startT: Time
-            startT = time proj.startDate 09 00 00
-
-            endT: Time
-            endT = time proj.endDate 18 00 00
-
-            diffInRelTime: RelTime
-            diffInRelTime = subTime endT startT
-
-            diffInDays: Int
-            diffInDays = wholeDays diffInRelTime
-
-            diffInWeekDays = diffInDays - (diffInDays/7 * 2) + 1 -- account for weekdays
-        in 
-            diffInWeekDays
+            products: [Product] = values cart.items
+            total: Numeric 10 = foldr (\acc y -> acc+y) 0.0 $ 
+                (map (\product -> (intToDecimal product.quantity) * product.price ) products)
+        in
+            fromNumeric total
 
 
-template ProjectProposal
+template ShoppingCartService
     with
-        proposer: Party
-        projectInfo: ProjectInfo
-        evaluator: Party
-        note: Text
+        customer: Party
+        cashier: Party
+        cart: ShoppingCart
     where
-        signatory proposer
-        observer evaluator
+        signatory customer
+        observer cashier
+
+        key (customer, cart): (Party, ShoppingCart)
+        maintainer key._1
+
+        nonconsuming choice GetShoppingCartValue: Decimal
+            controller cashier
+            do 
+                let 
+                    cartTotal: Decimal = getCartTotal cart
+                trace(show customer <> " cart total: " <> show cartTotal)(return cartTotal)
         
-        key (proposer, projectInfo) : (Party, ProjectInfo)
-        maintainer key._1
-
-        ensure (projectInfo.startDate < projectInfo.endDate) -- endDate has to be later than startDate
-
-        -- simply returns the ContractId of the current contract without archiving anything; can be used as a reminder if the proposal doesn't get either Approved or Rejected for a while
-        nonconsuming choice Propose: ProjectProposalId
-            controller proposer
-            do
-                return self
-
-        -- evaluator can check the list of accomplishments of the proposer to see if this proposer is qualified/ready take on a new project
-        nonconsuming choice ProposerAccomplishments: ([Text])
+        choice AddProduct: ContractId ShoppingCartService
             with
-                accomplishments: [(ContractId Accomplishment, Accomplishment)]
-            controller evaluator
+                product: Product
+            controller customer
             do
-                if null accomplishments then return ["N/A"]
-                else do
-                    -- 1. forA ver.
-                    forA accomplishments (\acc -> do
-                        let 
-                            accDetails = acc._2.project.projectInfo.title <> " : " <> acc._2.project.projectInfo.details
-                        trace(accDetails)(return accDetails))
-
-                    -- 2. map ver.
-                    -- return $ map (\acc -> acc._2.project.projectInfo.title <> " : " <> acc._2.project.projectInfo.details) accomplishments
-
-        -- evaluator can Reject the proposer with feedback
-        choice Reject: ProjectProposalId
-            with
-                feedback: Text
-            controller evaluator
-            do
-                create this with
-                    note = feedback
-
-        -- an example of preconsuming choice; can be a regular choice without the archive function
-        -- upon getting rejected, the original proposer can Revise the ProjectInfo to re-propose
-        nonconsuming choice Revise: ProjectProposalId
-            with
-                newProjectInfo: ProjectInfo
-                comment: Text
-            controller proposer
-            do
-                assertMsg ("Project info needs to be revised")(this.projectInfo /= newProjectInfo)
-                archive self
-                create this with
-                    projectInfo = newProjectInfo
-                    note = comment
-
-        -- proposer can cancle the proposal
-        choice Cancel: ()
-            controller proposer
-            do
-                return ()
-
-        -- evaluator can approve the ProjectProposal & create a Project contract
-        choice Approve: ProjectId
-            with
-                evaluationDate: Date -- when will the project get evaluated
-                evaluatorNote: Optional(Text)  
-            controller evaluator
-            do
-                assertMsg "Project should be evaluated after the deadline." (evaluationDate > projectInfo.endDate)
-                create Project with
-                    projectInfo
-                    duration = getDuration projectInfo
-                    evaluator
-                    evaluationDate
-                    evaluatorNote
-
-
-template Project
-    with
-        projectInfo: ProjectInfo
-        duration: Int
-        evaluator: Party
-        evaluationDate: Date
-        evaluatorNote: Optional(Text)
-    where
-        signatory evaluator, projectInfo.lead 
-
-        key (projectInfo.lead, projectInfo):(Party, ProjectInfo)
-        maintainer key._1
-
-        ensure evaluationDate > projectInfo.endDate
-
-        choice Evaluate: Either (ContractId Project) (ContractId Accomplishment)
-            with
-                todaysDate: Date
-                feedback: Optional(Text)
-                readyToPublish: Bool
-            controller evaluator
-            do
-                -- 1. if ver:
-                if readyToPublish then do
-                    newAcc <- create Accomplishment with
-                        project = this
-                        evaluator
-                    return (Right newAcc)
-                else do
-                    currProj <- create this with 
-                        evaluationDate = todaysDate
-                        evaluatorNote = feedback
-                    return (Left currProj)
-
-                -- 2. case ver:             
-                -- case readyToPublish of
-                --     False -> do
-                --         currProj <- create this with
-                --             evaluationDate = todaysDate
-                --             evaluatorNote = feedback
-                --         return (Left currProj)
-                --     True -> do
-                --         newAcc <- create Accomplishment with
-                --             project = this
-                --             evaluator
-                --         return (Right newAcc)
-
-        choice ChangeDates: ProjectId
-            with
-                newStartDate: Date
-                newEndDate: Date
-                newEvalDate: Date
-                comment: Optional(Text)
-            controller evaluator, projectInfo.lead
-            do
+                assertMsg ("Product price must be non-negative")(product.price>0.0)
+                assertMsg ("Product quantity must be non-negative")(product.quantity>0)
                 let
-                    newProjectInfo = ProjectInfo with
-                        lead = projectInfo.lead
-                        title = projectInfo.title
-                        details = projectInfo.details
-                        soloProject = projectInfo.soloProject
-                        participants = projectInfo.participants
-                        budgetRequirement = projectInfo.budgetRequirement
-                        startDate = newStartDate
-                        endDate = newEndDate
-
-                create this with
-                    projectInfo = newProjectInfo
-                    duration = getDuration newProjectInfo
-                    evaluationDate = newEvalDate
-                    evaluatorNote = comment
-
-        choice CancleProject: ()
-            controller evaluator, projectInfo.lead
+                    newCart = case Map.lookup product.name cart.items of
+                        -- If item isn't in cart, add it
+                        None -> (ShoppingCart with
+                            items = Map.insert product.name product cart.items)
+                        -- Else update the quantity
+                        Some prevProduct -> (ShoppingCart with 
+                            items = Map.insert product.name (Product with
+                                name = product.name
+                                quantity = product.quantity+prevProduct.quantity
+                                price = product.price
+                                    ) cart.items)
+                trace(show customer <> " cart: " <> show newCart)(create this with
+                    cart = newCart)
+        
+        choice RemoveProduct: ContractId ShoppingCartService
+            with
+                product: Product
+            controller customer
             do
-                return ()
+                assertMsg ("Product must have a name")(product.name/="")
+                let
+                    newCart = ShoppingCart with items = Map.filterWithKey (\k v -> v.name /= product.name) cart.items
+                trace(show customer <> " cart: " <> show newCart)(create this with
+                    cart = newCart)
+        
+        choice EmptyCart: ContractId ShoppingCartService
+            with
+                product: Product
+            controller customer, cashier
+            do
+                archive self 
+                trace("Emptied the shopping cart")(create this with
+                    cart = (ShoppingCart with items = Map.empty))
 
 
-template Accomplishment
+template CheckoutService
     with
-        project: Project
-        evaluator: Party
+        cashier: Party
+        customer: Party
+        customerBalance: Decimal
     where
-        -- 1. Ensure that the signatories of a Project contract is equal to that of Accomplishment contract
-        -- 2. Prevent Accomplishment contract from being created outside the Evaluate choice
-        signatory (signatory project)
+        signatory cashier
+        observer customer
 
-        key (project.projectInfo.lead, project.projectInfo) : (Party, ProjectInfo)
-        maintainer key._1
+        ensure customerBalance >= 0.0
+
+        choice Checkout: ContractId CheckoutService
+            with 
+                contractAndShoppingCart: [(ContractId ShoppingCartService, ShoppingCartService)]
+            controller cashier
+            do 
+                let 
+                    shoppingCartService = head (map (\x -> (x._2) ) contractAndShoppingCart)
+                    shoppingCart = shoppingCartService.cart
+                    cartTotal: Decimal = getCartTotal shoppingCart
+                    newBalance = customerBalance - cartTotal
+                assertMsg ("Total balance cannot exceed customer balance")(newBalance >= 0.0)
+                trace ("Remaining customer balance: " <> show newBalance)(create this with 
+                    customerBalance = newBalance)
+        
+        choice AddCustomerBalance: ContractId CheckoutService
+            with
+                additionalBalance: Decimal
+            controller customer
+            do
+                assertMsg ("Additional balance must be non-negative")(additionalBalance > 0.0)
+                let
+                    newBalance = customerBalance + additionalBalance
+                trace ("New customer balance: " <> show newBalance)(create this with 
+                    customerBalance = newBalance) 
