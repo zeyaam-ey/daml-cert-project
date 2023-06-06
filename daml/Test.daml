@@ -3,6 +3,7 @@ module Test where
 import Main
 import Setup
 import Daml.Script
+import DA.List
 
 
 {-
@@ -67,10 +68,11 @@ testCheckout = script do
     (testParties@TestParties{..}, testProducts@TestProducts{..}, shoppingCartServiceId, checkoutServiceId) <- testAddCustomerBalance
     
     contractAndShoppingCart <- query @ShoppingCartService customer
+    let shoppingCartServiceCid = (head (map (\x -> (x._1) ) contractAndShoppingCart))
 
     checkoutServiceId <- submit cashier do
         exerciseCmd checkoutServiceId Checkout with
-            contractAndShoppingCart
+            shoppingCartServiceCid
     
     return (testParties, testProducts, shoppingCartServiceId, checkoutServiceId)
 
@@ -111,9 +113,10 @@ cantCheckoutWithoutMoney = script do
     (testParties@TestParties{..}, testProducts@TestProducts{..}, shoppingCartServiceId, checkoutServiceId) <- testRemoveProduct
     
     contractAndShoppingCart <- query @ShoppingCartService customer
+    let shoppingCartServiceCid = (head (map (\x -> (x._1) ) contractAndShoppingCart))
 
     checkoutServiceId <- submitMustFail cashier do
         exerciseCmd checkoutServiceId Checkout with
-            contractAndShoppingCart
+            shoppingCartServiceCid
     
     return (testParties, testProducts, shoppingCartServiceId, checkoutServiceId)

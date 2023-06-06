@@ -1,7 +1,6 @@
 module Main where
 
 import DA.Map as Map
-import DA.List as List
 
 
 data Product = Product with
@@ -21,8 +20,7 @@ instance Metrics ShoppingCart Decimal where
     getCartTotal cart =
         let
             products: [Product] = values cart.items
-            total: Numeric 10 = foldr (\acc y -> acc+y) 0.0 $ 
-                (map (\product -> (intToDecimal product.quantity) * product.price ) products)
+            total: Numeric 10 = sum $ (map (\product -> (intToDecimal product.quantity) * product.price ) products)
         in
             fromNumeric total
 
@@ -102,11 +100,11 @@ template CheckoutService
 
         choice Checkout: ContractId CheckoutService
             with 
-                contractAndShoppingCart: [(ContractId ShoppingCartService, ShoppingCartService)]
+                shoppingCartServiceCid: ContractId ShoppingCartService
             controller cashier
             do 
+                shoppingCartService: ShoppingCartService <- fetch @ShoppingCartService shoppingCartServiceCid
                 let 
-                    shoppingCartService = head (map (\x -> (x._2) ) contractAndShoppingCart)
                     shoppingCart = shoppingCartService.cart
                     cartTotal: Decimal = getCartTotal shoppingCart
                     newBalance = customerBalance - cartTotal
